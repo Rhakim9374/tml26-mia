@@ -15,7 +15,7 @@ docker_image  = pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
 executable    = /opt/conda/bin/python
 
 # --- Override these per submission --------------------------------------------
-script = scripts/inspect.py
+script = scripts/recon.py
 args   =
 tag    = run
 

@@ -5,7 +5,7 @@ Run on the cluster (interactive recommended for first run):
     condor_submit -i mia.sub -append "tag=inspect"
     # inside the container:
     cd /home/$USER/tml26-mia
-    python scripts/inspect.py
+    python scripts/recon.py
 
 Or as a batch job (default script in mia.sub is this file):
     condor_submit mia.sub -append "tag=inspect"
