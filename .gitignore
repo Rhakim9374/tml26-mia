@@ -4,7 +4,6 @@
 *.ckpt
 data/
 checkpoints/
-shadow_models/
 
 # Outputs
 submission*.csv
