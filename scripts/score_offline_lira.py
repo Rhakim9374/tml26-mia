@@ -36,7 +36,7 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.data import load_pub, load_priv, MODEL_PATH
+from src.data import load_pub, load_priv, predict_collate, MODEL_PATH
 from src.model import build_model, load_target
 
 CHECKPOINTS_DIR = ROOT / "checkpoints"
@@ -74,9 +74,7 @@ def collect_phi(model, loader, n: int, device: str) -> np.ndarray:
     """Return an array of φ values aligned with the dataset's order."""
     out = np.zeros(n, dtype=np.float64)
     pos = 0
-    for batch in loader:
-        # support both pub (4-tuple) and priv (4-tuple, mem=None)
-        _, imgs, labels_b, _ = batch
+    for _, imgs, labels_b in loader:
         imgs = imgs.to(device, non_blocking=True)
         labels_b = labels_b.to(device, non_blocking=True)
         logits = model(imgs)
@@ -94,8 +92,10 @@ def main():
 
     pub = load_pub()
     priv = load_priv()
-    pub_loader = DataLoader(pub, batch_size=512, shuffle=False, num_workers=2)
-    priv_loader = DataLoader(priv, batch_size=512, shuffle=False, num_workers=2)
+    pub_loader = DataLoader(pub, batch_size=512, shuffle=False, num_workers=2,
+                            collate_fn=predict_collate)
+    priv_loader = DataLoader(priv, batch_size=512, shuffle=False, num_workers=2,
+                             collate_fn=predict_collate)
 
     # Target φ over pub and priv.
     print("Forward pass: target", flush=True)

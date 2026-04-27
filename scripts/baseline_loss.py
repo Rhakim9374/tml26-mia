@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.data import load_priv, MODEL_PATH
+from src.data import load_priv, predict_collate, MODEL_PATH
 from src.model import load_target
 
 OUT_PATH = ROOT / "submissions" / "submission.csv"
@@ -39,13 +39,14 @@ def main():
     print(f"priv size: {len(priv)}", flush=True)
 
     model = load_target(MODEL_PATH, map_location=device).to(device)
-    loader = DataLoader(priv, batch_size=512, shuffle=False, num_workers=2)
+    loader = DataLoader(priv, batch_size=512, shuffle=False, num_workers=2,
+                        collate_fn=predict_collate)
 
     p_correct = np.zeros(len(priv), dtype=np.float64)
     ids: list[str] = []
     pos = 0
     with torch.no_grad():
-        for ids_b, imgs, labels_b, _ in loader:
+        for ids_b, imgs, labels_b in loader:
             imgs = imgs.to(device, non_blocking=True)
             labels_b = labels_b.to(device, non_blocking=True)
             logits = model(imgs)

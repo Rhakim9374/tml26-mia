@@ -80,3 +80,11 @@ def load_priv(transform=None) -> MembershipDataset:
     ds = torch.load(PRIV_PATH, weights_only=False)
     ds.transform = transform if transform is not None else standard_transform()
     return ds
+
+
+def predict_collate(batch):
+    """Collate for forward-pass loaders. Drops membership so priv (all None) works."""
+    ids = [b[0] for b in batch]
+    imgs = torch.stack([b[1] for b in batch])
+    labels = torch.tensor([b[2] for b in batch], dtype=torch.long)
+    return ids, imgs, labels
