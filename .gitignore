@@ -8,10 +8,14 @@ shadow_models/
 
 # Outputs
 submission*.csv
+submissions/
 runlogs/
 *.log
 *.out
 *.err
+
+# Secrets
+secrets.env
 
 # Python
 __pycache__/
