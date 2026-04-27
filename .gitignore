@@ -25,3 +25,8 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# Claude
+CLAUDE.md
+**/CLAUDE.md
+.claude/
