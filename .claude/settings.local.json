@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/rafihakim/.ssh/**)",
+      "Bash(ssh -T git@github.com)"
+    ]
+  }
+}
