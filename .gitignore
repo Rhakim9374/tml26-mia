@@ -1,0 +1,27 @@
+# Data files (downloaded separately on cluster)
+*.pt
+*.pth
+*.ckpt
+data/
+checkpoints/
+shadow_models/
+
+# Outputs
+submission*.csv
+runlogs/
+*.log
+*.out
+*.err
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
