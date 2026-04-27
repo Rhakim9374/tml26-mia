@@ -1,10 +1,11 @@
 # HTCondor submit file for TML26 MIA jobs.
 #
-# Override the script / args / tag at submit time, e.g.:
-#   condor_submit mia.sub -append "script=scripts/baseline_loss.py" -append "tag=baseline"
+# Always pass -queue N at submit time (no queue statement in this file).
+# Examples:
+#   condor_submit mia.sub -append "script=scripts/baseline_loss.py" -append "tag=baseline" -queue 1
 #   condor_submit mia.sub -append "script=scripts/train_shadow.py" \
 #                         -append 'args=$(Process)' -append "tag=shadow" -queue 16
-#   condor_submit mia.sub -append "request_memory=16G" ...
+#   condor_submit mia.sub -append "request_memory=16G" ... -queue 1
 #
 # DO NOT change docker_image, executable, requirements, or +Want* lines —
 # those are prescribed by the HPC cluster guide.
@@ -34,5 +35,3 @@ should_transfer_files = YES
 requirements          = UidDomain == "cs.uni-saarland.de"
 +WantGPUHomeMounted   = true
 +WantScratchMounted   = true
-
-queue 1
