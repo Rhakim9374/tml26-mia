@@ -13,12 +13,12 @@ Steps:
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import shutil
 import sys
 from pathlib import Path
 
-import pandas as pd
 import requests
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -46,23 +46,39 @@ def read_api_key() -> str:
     sys.exit(f"TML_API_KEY not found in {SECRETS_PATH}")
 
 
-def validate(csv_path: Path) -> pd.DataFrame:
+def validate(csv_path: Path) -> int:
     if not csv_path.exists():
         sys.exit(f"File not found: {csv_path}")
-    df = pd.read_csv(csv_path)
-    if list(df.columns) != ["id", "score"]:
-        sys.exit(f"Bad columns {list(df.columns)} — expected ['id', 'score']")
-    if df["id"].duplicated().any():
-        sys.exit("Duplicate ids in submission")
-    if df["score"].isna().any():
-        sys.exit("NaN scores in submission")
-    if not pd.api.types.is_numeric_dtype(df["score"]):
-        sys.exit(f"Non-numeric scores: dtype={df['score'].dtype}")
-    if (df["score"] < 0).any() or (df["score"] > 1).any():
-        sys.exit("Scores out of [0, 1] range")
-    print(f"Validated: {len(df)} rows, score range "
-          f"[{df['score'].min():.4f}, {df['score'].max():.4f}]")
-    return df
+    seen_ids: set[str] = set()
+    n_rows = 0
+    s_min, s_max = float("inf"), float("-inf")
+    with open(csv_path, newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if header != ["id", "score"]:
+            sys.exit(f"Bad header {header} — expected ['id', 'score']")
+        for row in reader:
+            if len(row) != 2:
+                sys.exit(f"Row {n_rows + 1} has {len(row)} columns, expected 2")
+            id_, score_str = row
+            if id_ in seen_ids:
+                sys.exit(f"Duplicate id: {id_}")
+            seen_ids.add(id_)
+            try:
+                score = float(score_str)
+            except ValueError:
+                sys.exit(f"Non-numeric score on row {n_rows + 1}: {score_str!r}")
+            if score != score:  # NaN
+                sys.exit(f"NaN score on row {n_rows + 1}")
+            if score < 0.0 or score > 1.0:
+                sys.exit(f"Score out of [0,1] on row {n_rows + 1}: {score}")
+            s_min = min(s_min, score)
+            s_max = max(s_max, score)
+            n_rows += 1
+    if n_rows == 0:
+        sys.exit("Submission is empty")
+    print(f"Validated: {n_rows} rows, score range [{s_min:.4f}, {s_max:.4f}]")
+    return n_rows
 
 
 def archive(csv_path: Path, tag: str) -> Path:

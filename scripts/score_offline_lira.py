@@ -24,11 +24,11 @@ Run after training 16 shadows:
 
 from __future__ import annotations
 
+import csv
 import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -163,10 +163,13 @@ def main():
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     ids = [str(i) for i in priv.ids]
-    df = pd.DataFrame({"id": ids, "score": score_priv})
-    df.to_csv(OUT_PATH, index=False)
-    print(f"\nWrote {OUT_PATH}  rows={len(df)}  "
-          f"score range=[{df['score'].min():.4f}, {df['score'].max():.4f}]",
+    with open(OUT_PATH, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "score"])
+        for i, s in zip(ids, score_priv):
+            w.writerow([i, f"{s:.6f}"])
+    print(f"\nWrote {OUT_PATH}  rows={len(ids)}  "
+          f"score range=[{score_priv.min():.4f}, {score_priv.max():.4f}]",
           flush=True)
 
 

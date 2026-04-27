@@ -13,11 +13,11 @@ Run on the cluster:
 
 from __future__ import annotations
 
+import csv
 import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -42,7 +42,7 @@ def main():
     loader = DataLoader(priv, batch_size=512, shuffle=False, num_workers=2)
 
     p_correct = np.zeros(len(priv), dtype=np.float64)
-    ids = []
+    ids: list[str] = []
     pos = 0
     with torch.no_grad():
         for ids_b, imgs, labels_b, _ in loader:
@@ -53,14 +53,17 @@ def main():
             pc = probs.gather(1, labels_b.unsqueeze(1)).squeeze(1)
             n = pc.shape[0]
             p_correct[pos:pos + n] = pc.cpu().numpy()
-            ids.extend(ids_b if isinstance(ids_b, list) else list(ids_b))
+            ids.extend(str(i) for i in ids_b)
             pos += n
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame({"id": [str(i) for i in ids], "score": p_correct})
-    df.to_csv(OUT_PATH, index=False)
-    print(f"Wrote {OUT_PATH}  rows={len(df)}  "
-          f"score range=[{df['score'].min():.4f}, {df['score'].max():.4f}]",
+    with open(OUT_PATH, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "score"])
+        for i, s in zip(ids, p_correct):
+            w.writerow([i, f"{s:.6f}"])
+    print(f"Wrote {OUT_PATH}  rows={len(ids)}  "
+          f"score range=[{p_correct.min():.4f}, {p_correct.max():.4f}]",
           flush=True)
 
 
