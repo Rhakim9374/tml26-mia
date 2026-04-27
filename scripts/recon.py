@@ -2,14 +2,14 @@
 
 Run on the cluster (interactive recommended for first run):
 
-    condor_submit -i mia.sub -append "tag=inspect"
+    condor_submit -i mia.sub -append "tag=recon"
     # inside the container:
     cd /home/$USER/tml26-mia
     python scripts/recon.py
 
 Or as a batch job (default script in mia.sub is this file):
-    condor_submit mia.sub -append "tag=inspect"
-    # then: cat runlogs/inspect.<ClusterId>.0.out
+    condor_submit mia.sub -append "tag=recon"
+    # then: cat runlogs/recon.<ClusterId>.0.out
 
 Reports:
   - Dataset sizes; member/non-member counts in pub.pt.
@@ -36,7 +36,7 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.data import load_pub, load_priv, MODEL_PATH
+from src.data import load_pub, load_priv, predict_collate, MODEL_PATH
 from src.model import load_target
 
 
@@ -98,13 +98,14 @@ def main():
 
     print("\n=== Forward pass: target model on pub ===")
     model = load_target(MODEL_PATH, map_location=device).to(device)
-    loader = DataLoader(pub, batch_size=512, shuffle=False, num_workers=2)
+    loader = DataLoader(pub, batch_size=512, shuffle=False, num_workers=2,
+                        collate_fn=predict_collate)
 
     p_correct = np.zeros(len(pub), dtype=np.float64)
     correct = np.zeros(len(pub), dtype=bool)
     pos = 0
     with torch.no_grad():
-        for _, imgs, labels_b, _ in loader:
+        for _, imgs, labels_b in loader:
             imgs = imgs.to(device, non_blocking=True)
             labels_b = labels_b.to(device, non_blocking=True)
             logits = model(imgs)

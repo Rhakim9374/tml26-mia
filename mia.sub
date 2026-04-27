@@ -3,8 +3,7 @@
 # Override the script / args / tag at submit time, e.g.:
 #   condor_submit mia.sub -append "script=scripts/baseline_loss.py" -append "tag=baseline"
 #   condor_submit mia.sub -append "script=scripts/train_shadow.py" \
-#                         -append "args=--seed 0 --frac 0.5"      \
-#                         -append "tag=shadow_0"
+#                         -append 'args=$(Process)' -append "tag=shadow" -queue 16
 #   condor_submit mia.sub -append "request_memory=16G" ...
 #
 # DO NOT change docker_image, executable, requirements, or +Want* lines —

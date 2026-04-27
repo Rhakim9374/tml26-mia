@@ -1,8 +1,4 @@
 torch
 torchvision
 numpy
-pandas
-scipy
-tqdm
-pyyaml
 requests
