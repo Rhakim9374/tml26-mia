@@ -23,7 +23,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +34,6 @@ from src.model import NUM_CLASSES, build_model, load_target
 
 CHECKPOINTS_DIR = ROOT / "checkpoints"
 OUT_PATH = ROOT / "submissions" / "submission.csv"
-EPS = 1e-12
 SIGMA_FLOOR = 1e-6
 SIGMOID_CLIP = 50.0  # avoid np.exp overflow warnings on extreme log-LRs
 
@@ -47,7 +45,12 @@ def make_augs(imgs: torch.Tensor) -> list[torch.Tensor]:
 
 @torch.no_grad()
 def collect_phi(model, loader, n: int, device: str) -> np.ndarray:
-    """Mean φ across augmentations, in dataset order."""
+    """Mean φ across augmentations, in dataset order.
+
+    φ_y = z_y - logsumexp(z_{j≠y}) — equivalent to log(p / (1-p)) on the true
+    class but computed directly from logits, so it never enters probability
+    space. No clamping, no EPS, no overflow when softmax saturates at 1.0.
+    """
     phi = np.zeros(n, dtype=np.float64)
     pos = 0
     for _, imgs, labels in loader:
@@ -56,10 +59,11 @@ def collect_phi(model, loader, n: int, device: str) -> np.ndarray:
         augs = make_augs(imgs)
         phi_sum = torch.zeros(imgs.shape[0], device=device, dtype=torch.float64)
         for aug in augs:
-            probs = F.softmax(model(aug), dim=1)
-            p = probs.gather(1, labels.unsqueeze(1)).squeeze(1)
-            p = torch.clamp(p, EPS, 1 - EPS)
-            phi_sum += torch.log(p / (1 - p)).double()
+            logits = model(aug)
+            z_y = logits.gather(1, labels.unsqueeze(1)).squeeze(1)
+            masked = logits.scatter(1, labels.unsqueeze(1), float("-inf"))
+            log_sum_other = torch.logsumexp(masked, dim=1)
+            phi_sum += (z_y - log_sum_other).double()
         nb = imgs.shape[0]
         phi[pos:pos + nb] = (phi_sum / len(augs)).cpu().numpy()
         pos += nb
