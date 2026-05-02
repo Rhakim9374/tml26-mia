@@ -34,11 +34,11 @@ log    = /home/$ENV(USER)/tml26-mia/runlogs/$(tag).$(ClusterId).log
 # 4 CPUs: data loaders + numpy nanstd over big arrays are CPU-heavy.
 request_GPUs   = 1
 request_CPUs   = 4
-request_memory = 32G
+request_memory = 40G
 
 # --- Cluster-prescribed: do not change ----------------------------------------
 should_transfer_files = YES
 requirements          = UidDomain == "cs.uni-saarland.de"
-rank                  = (GPUs_DeviceName == "NVIDIA H200 NVL") * 1000 + GPUs_GlobalMemoryMb
+rank                  = GPUs_GlobalMemoryMb
 +WantGPUHomeMounted   = true
 +WantScratchMounted   = true

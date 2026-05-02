@@ -28,11 +28,11 @@ log    = /home/$ENV(USER)/tml26-mia/runlogs/$(tag).$(ClusterId).log
 # --- Resources (tunable) ------------------------------------------------------
 request_GPUs   = 1
 request_CPUs   = 1
-request_memory = 8G
+request_memory = 20G
 
 # --- Cluster-prescribed: do not change ----------------------------------------
 should_transfer_files = YES
-requirements          = UidDomain == "cs.uni-saarland.de" && (GPUs_GlobalMemoryMb >= 40000)
-rank                  = (GPUs_DeviceName == "NVIDIA H200 NVL") * 1000 + GPUs_GlobalMemoryMb
+requirements          = UidDomain == "cs.uni-saarland.de"
+rank                  = GPUs_GlobalMemoryMb
 +WantGPUHomeMounted   = true
 +WantScratchMounted   = true
