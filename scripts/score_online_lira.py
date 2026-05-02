@@ -167,25 +167,24 @@ def main():
           f"(σ_in={sigma_in_global:.3f} σ_out={sigma_out_global:.3f})", flush=True)
     print(f"  φ_target − μ_out        : {tpr_at_fpr(score_meanshift, pub_mem):.4f}", flush=True)
 
-    # Priv: per-sample OUT-Gaussian (all shadows OUT) + class-conditional IN.
+    # Priv: fixed-σ LiRA (per-sample μ, single global σ — beats per-sample σ on pub).
+    # μ_out: per-sample mean across all 512 (all-OUT) shadow φ values.
+    # μ_in : class-conditional, pooled from pub IN observations (priv has no IN).
+    # σ_in : global IN-σ from pub. σ_out: global OUT-σ pooled across priv shadows.
     mu_out_priv = phi_shadow_priv.mean(axis=0)
-    sigma_out_priv = np.maximum(phi_shadow_priv.std(axis=0, ddof=1), SIGMA_FLOOR)
+    sigma_out_priv_global = float(phi_shadow_priv.std())
 
     pub_labels = np.asarray(pub.labels, dtype=int)
     priv_labels = np.asarray(priv.labels, dtype=int)
     mu_in_class = np.zeros(NUM_CLASSES, dtype=np.float64)
-    sigma_in_class = np.zeros(NUM_CLASSES, dtype=np.float64)
-    print("\nClass-conditional IN-Gaussian (pooled from pub):")
+    print("\nClass-conditional IN-μ (pooled from pub):")
     for c in range(NUM_CLASSES):
-        sub = in_phi[:, pub_labels == c]
-        mu_in_class[c] = np.nanmean(sub)
-        sigma_in_class[c] = max(np.nanstd(sub, ddof=1), SIGMA_FLOOR)
-        print(f"  class {c}: μ={mu_in_class[c]:+.3f}  σ={sigma_in_class[c]:.3f}", flush=True)
+        mu_in_class[c] = np.nanmean(in_phi[:, pub_labels == c])
+        print(f"  class {c}: μ={mu_in_class[c]:+.3f}", flush=True)
 
     mu_in_priv = mu_in_class[priv_labels]
-    sigma_in_priv = sigma_in_class[priv_labels]
-    log_lr_priv = (gauss_log_pdf(phi_target_priv, mu_in_priv, sigma_in_priv) -
-                   gauss_log_pdf(phi_target_priv, mu_out_priv, sigma_out_priv))
+    log_lr_priv = (gauss_log_pdf(phi_target_priv, mu_in_priv, sigma_in_global) -
+                   gauss_log_pdf(phi_target_priv, mu_out_priv, sigma_out_priv_global))
     score_priv = 1.0 / (1.0 + np.exp(-np.clip(log_lr_priv, -SIGMOID_CLIP, SIGMOID_CLIP)))
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
