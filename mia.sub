@@ -33,6 +33,5 @@ request_memory = 20G
 # --- Cluster-prescribed: do not change ----------------------------------------
 should_transfer_files = YES
 requirements          = UidDomain == "cs.uni-saarland.de"
-rank                  = GPUs_GlobalMemoryMb
 +WantGPUHomeMounted   = true
 +WantScratchMounted   = true
