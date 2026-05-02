@@ -128,16 +128,44 @@ def main():
     in_phi = np.where(in_masks_pub, phi_shadow_pub, np.nan)
     out_phi = np.where(out_masks_pub, phi_shadow_pub, np.nan)
     mu_in_pub = np.nanmean(in_phi, axis=0)
-    sigma_in_pub = np.maximum(np.nanstd(in_phi, axis=0, ddof=1), SIGMA_FLOOR)
+    sigma_in_raw = np.nanstd(in_phi, axis=0, ddof=1)
     mu_out_pub = np.nanmean(out_phi, axis=0)
-    sigma_out_pub = np.maximum(np.nanstd(out_phi, axis=0, ddof=1), SIGMA_FLOOR)
+    sigma_out_raw = np.nanstd(out_phi, axis=0, ddof=1)
+
+    # Diagnostics: are per-sample σs collapsing? (would explain log-LR junk.)
+    def pct(a, qs=(1, 5, 50, 95, 99)):
+        return "  ".join(f"p{q}={np.nanpercentile(a, q):+.3g}" for q in qs)
+    print("\nφ_target_pub  ", pct(phi_target_pub), flush=True)
+    print("μ_in_pub      ", pct(mu_in_pub), flush=True)
+    print("μ_out_pub     ", pct(mu_out_pub), flush=True)
+    print("σ_in_pub raw  ", pct(sigma_in_raw), flush=True)
+    print("σ_out_pub raw ", pct(sigma_out_raw), flush=True)
+    n_floor_in = int((sigma_in_raw < SIGMA_FLOOR * 10).sum())
+    n_floor_out = int((sigma_out_raw < SIGMA_FLOOR * 10).sum())
+    print(f"σ near floor: in={n_floor_in}/{len(pub)}  out={n_floor_out}/{len(pub)}",
+          flush=True)
+
+    sigma_in_pub = np.maximum(sigma_in_raw, SIGMA_FLOOR)
+    sigma_out_pub = np.maximum(sigma_out_raw, SIGMA_FLOOR)
 
     log_lr_pub = (gauss_log_pdf(phi_target_pub, mu_in_pub, sigma_in_pub) -
                   gauss_log_pdf(phi_target_pub, mu_out_pub, sigma_out_pub))
 
+    # Fixed-variance variant (Carlini eq. 4): pool σ across all samples.
+    sigma_in_global = float(np.nanstd(in_phi))
+    sigma_out_global = float(np.nanstd(out_phi))
+    log_lr_pub_fixed = (gauss_log_pdf(phi_target_pub, mu_in_pub, sigma_in_global) -
+                        gauss_log_pdf(phi_target_pub, mu_out_pub, sigma_out_global))
+
+    # Mean-shift baseline: just (φ_target − μ_out). Robust to σ pathologies.
+    score_meanshift = phi_target_pub - mu_out_pub
+
     pub_mem = np.asarray(pub.membership, dtype=int)
     print(f"\n=== TPR@5%FPR on pub ===")
-    print(f"  online LiRA (log-LR): {tpr_at_fpr(log_lr_pub, pub_mem):.4f}", flush=True)
+    print(f"  online LiRA per-sample σ: {tpr_at_fpr(log_lr_pub, pub_mem):.4f}", flush=True)
+    print(f"  online LiRA fixed σ     : {tpr_at_fpr(log_lr_pub_fixed, pub_mem):.4f}  "
+          f"(σ_in={sigma_in_global:.3f} σ_out={sigma_out_global:.3f})", flush=True)
+    print(f"  φ_target − μ_out        : {tpr_at_fpr(score_meanshift, pub_mem):.4f}", flush=True)
 
     # Priv: per-sample OUT-Gaussian (all shadows OUT) + class-conditional IN.
     mu_out_priv = phi_shadow_priv.mean(axis=0)
