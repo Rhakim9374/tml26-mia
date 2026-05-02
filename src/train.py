@@ -4,9 +4,17 @@ Standard CIFAR-style recipe: SGD momentum 0.9, weight_decay 5e-4, cosine LR
 peak 0.1, 100 epochs, batch 256. Augmentations: random crop (32, padding=4)
 + horizontal flip. Same Normalize as the target, applied after augs.
 
-A "shadow" trains on a deterministic random 50% subset of a pool dataset,
-controlled by a seed. The IN-index set is saved alongside the checkpoint so
-later scoring scripts can tell who was IN vs OUT for each shadow.
+Each shadow trains on a deterministic random 50% subset of the COMBINED
+pub+priv pool (28k samples), controlled by a seed. Including priv in the
+pool is what makes online LiRA work on priv: every priv sample is IN for
+~half the shadows and OUT for the other half, giving us per-sample IN/OUT
+Gaussians on priv at scoring time. Priv membership is the *target's*
+training-set membership; for shadows we just need (image, label) pairs and
+both pub.pt and priv.pt provide those.
+
+Saves to checkpoints/shadow_NNNN.pt + shadow_NNNN_in_idx.pt. The in-idx
+tensor stores positions in the combined pool: [0, n_pub) → pub samples,
+[n_pub, total) → priv samples.
 """
 
 from __future__ import annotations
@@ -20,7 +28,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import torchvision.transforms as T
 
-from src.data import MEAN, STD, MembershipDataset, load_pub
+from src.data import MEAN, STD, CombinedPool, load_combined
 from src.model import build_model
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -44,10 +52,11 @@ def eval_transform() -> T.Compose:
 
 
 class IndexedSubset(Dataset):
-    """Wraps a MembershipDataset, yields (img, label) for the given indices,
-    applying a fresh transform. Avoids mutating the underlying dataset."""
+    """Wraps a pool (CombinedPool / MembershipDataset), yields (img, label) for
+    the given indices, applying a fresh transform. Avoids mutating the
+    underlying dataset."""
 
-    def __init__(self, base: MembershipDataset, indices: Iterable[int],
+    def __init__(self, base: CombinedPool, indices: Iterable[int],
                  transform: T.Compose):
         self.base = base
         self.indices = list(indices)
@@ -71,18 +80,14 @@ def split_in_out(n: int, seed: int, frac_in: float = 0.5) -> tuple[np.ndarray, n
     return perm[:cut], perm[cut:]
 
 
-def train_shadow(seed: int, pool_name: str = "pub", epochs: int = 100,
-                 batch_size: int = 256, num_workers: int = 2,
-                 device: str | None = None, verbose: bool = True) -> Path:
-    """Train one shadow and save checkpoint + IN-indices to CHECKPOINTS_DIR."""
+def train_shadow(seed: int, epochs: int = 100, batch_size: int = 256,
+                 num_workers: int = 2, device: str | None = None,
+                 verbose: bool = True) -> Path:
+    """Train one shadow on a 50% subset of the combined pub+priv pool."""
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if pool_name == "pub":
-        pool = load_pub(transform=None)
-    else:
-        raise ValueError(f"Unknown pool: {pool_name}")
-
+    pool = load_combined(transform=None)
     in_idx, _ = split_in_out(len(pool), seed=seed, frac_in=0.5)
     train_ds = IndexedSubset(pool, in_idx, train_transform())
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
@@ -119,10 +124,11 @@ def train_shadow(seed: int, pool_name: str = "pub", epochs: int = 100,
                   flush=True)
 
     CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
-    ckpt_path = CHECKPOINTS_DIR / f"{pool_name}_shadow_{seed:04d}.pt"
-    idx_path = CHECKPOINTS_DIR / f"{pool_name}_shadow_{seed:04d}_in_idx.pt"
+    ckpt_path = CHECKPOINTS_DIR / f"shadow_{seed:04d}.pt"
+    idx_path = CHECKPOINTS_DIR / f"shadow_{seed:04d}_in_idx.pt"
     torch.save(model.state_dict(), ckpt_path)
     torch.save(torch.from_numpy(in_idx.astype(np.int64)), idx_path)
     if verbose:
-        print(f"Saved {ckpt_path.name} ({len(in_idx)} IN samples)", flush=True)
+        print(f"Saved {ckpt_path.name} ({len(in_idx)} IN samples "
+              f"of {len(pool)} combined)", flush=True)
     return ckpt_path

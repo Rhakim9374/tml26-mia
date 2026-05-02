@@ -82,6 +82,40 @@ def load_priv(transform=None) -> MembershipDataset:
     return ds
 
 
+class CombinedPool(Dataset):
+    """pub + priv concatenated. Indices [0, n_pub) are pub; [n_pub, total) are priv.
+
+    Used for both shadow training (each shadow trains on a 50% subset of this
+    combined pool, so every sample — pub OR priv — is IN for ~half the shadows
+    and OUT for the other half) and for scoring shadows on all 28k samples
+    uniformly. This gives priv samples per-sample IN/OUT statistics, which is
+    what makes online LiRA work on priv at submission time.
+    """
+
+    def __init__(self, transform=None):
+        pub = load_pub(transform=None)
+        priv = load_priv(transform=None)
+        self.imgs = list(pub.imgs) + list(priv.imgs)
+        self.labels = list(pub.labels) + list(priv.labels)
+        self.ids = list(pub.ids) + list(priv.ids)
+        self.n_pub = len(pub.ids)
+        self.n_priv = len(priv.ids)
+        self.transform = transform if transform is not None else standard_transform()
+
+    def __len__(self):
+        return len(self.ids)
+
+    def __getitem__(self, idx):
+        img = self.imgs[idx]
+        if self.transform is not None:
+            img = self.transform(img)
+        return self.ids[idx], img, self.labels[idx]
+
+
+def load_combined(transform=None) -> CombinedPool:
+    return CombinedPool(transform=transform)
+
+
 def predict_collate(batch):
     """Collate for forward-pass loaders. Drops membership so priv (all None) works."""
     ids = [b[0] for b in batch]

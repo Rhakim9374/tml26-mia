@@ -1,0 +1,44 @@
+# HTCondor submit file for the WHITE-BOX GRADIENT-NORM LiRA attack.
+#
+# Independent of mia.sub — different default script, different default tag,
+# bumped resources for vmap-per-sample-gradients (per-batch grad tensor of
+# ~3 GB on GPU, plus 5–7 GB CPU RAM peak holding the (n_shadows × n_samples ×
+# n_layers) feature arrays).
+#
+# Usage:
+#   condor_submit mia_grad.sub -append "tag=grad_lira" -queue 1
+#   # or override script/args if iterating:
+#   condor_submit mia_grad.sub -append "script=scripts/score_grad_lira.py" \
+#                              -append "tag=grad_lira_v2" -queue 1
+#
+# DO NOT change docker_image, executable, requirements, or +Want* lines.
+
+universe      = docker
+docker_image  = pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
+executable    = /opt/conda/bin/python
+
+# --- Override these per submission --------------------------------------------
+script = scripts/score_grad_lira.py
+args   =
+tag    = grad_lira
+
+arguments = /home/$ENV(USER)/tml26-mia/$(script) $(args)
+
+output = /home/$ENV(USER)/tml26-mia/runlogs/$(tag).$(ClusterId).$(ProcId).out
+error  = /home/$ENV(USER)/tml26-mia/runlogs/$(tag).$(ClusterId).$(ProcId).err
+log    = /home/$ENV(USER)/tml26-mia/runlogs/$(tag).$(ClusterId).log
+
+# --- Resources (overestimated for grad-norm sweep) ----------------------------
+# 32G CPU RAM: peak ~7G holding (512 × 14k × 62 float32) feature arrays for
+#   pub + priv plus IN/OUT-masked NaN copies; 4× headroom for safety.
+# 4 CPUs: data loaders + numpy nanstd over big arrays are CPU-heavy.
+request_GPUs   = 1
+request_CPUs   = 4
+request_memory = 32G
+
+# --- Cluster-prescribed: do not change ----------------------------------------
+should_transfer_files = YES
+requirements          = UidDomain == "cs.uni-saarland.de"
+rank                  = (GPUs_DeviceName == "NVIDIA H200 NVL") * 1000 + GPUs_GlobalMemoryMb
++WantGPUHomeMounted   = true
++WantScratchMounted   = true
