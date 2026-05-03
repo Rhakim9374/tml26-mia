@@ -38,7 +38,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,18 +55,12 @@ DEFAULT_CKPT_PREFIX = "shadow"
 
 
 def make_augs(imgs: torch.Tensor) -> list[torch.Tensor]:
-    """6 deterministic augmentations: identity, hflip, and 4 reflect-padded
-    corner crops. Carlini's LiRA paper Sec. 4.4 shows multi-aug querying
-    tightens per-sample IN/OUT Gaussians and gives a measurable TPR lift —
-    the variance reduction from averaging φ across diverse views matters in
-    well-generalizing regimes where any single query is noisy.
-    """
-    H, W = imgs.shape[-2:]
-    pad = 4
-    padded = F.pad(imgs, (pad, pad, pad, pad), mode="reflect")
-    crops = [padded[..., dy:dy + H, dx:dx + W]
-             for dy, dx in [(0, 0), (2 * pad, 0), (0, 2 * pad), (2 * pad, 2 * pad)]]
-    return [imgs, torch.flip(imgs, dims=[-1]), *crops]
+    """Identity + hflip. Empirically tested 6-aug variant (id+hflip+4 corner
+    crops) on baseline shadows — pub TPR REGRESSED from 0.0697 to 0.0624.
+    The corner crops apparently disturb predictions in a way that hurts
+    member/non-member ranking on 32x32 inputs, despite Carlini's paper
+    suggesting otherwise. Sticking with the 2-aug version that works."""
+    return [imgs, torch.flip(imgs, dims=[-1])]
 
 
 @torch.no_grad()
