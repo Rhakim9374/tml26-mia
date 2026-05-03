@@ -69,8 +69,10 @@ def preload(pool, device: str) -> tuple[torch.Tensor, torch.Tensor]:
 
 def collect_grad_log_norms(model, imgs: torch.Tensor, labels: torch.Tensor,
                            param_names: list[str], device: str,
-                           batch_size: int) -> np.ndarray:
-    """(N, L) per-sample per-named-parameter log L2 grad norm. Identity aug only."""
+                           batch_size: int, with_hflip: bool) -> np.ndarray:
+    """(N, L) per-sample per-named-parameter log L2 grad norm. Identity-only by
+    default; --with-hflip averages the log-norm across identity + hflip augs
+    (2x compute, possibly tighter LiRA Gaussians)."""
     n = imgs.shape[0]
     n_layers = len(param_names)
     out = np.zeros((n, n_layers), dtype=np.float32)
@@ -88,12 +90,16 @@ def collect_grad_log_norms(model, imgs: torch.Tensor, labels: torch.Tensor,
         x_batch = imgs[start:start + batch_size]
         y_batch = labels[start:start + batch_size]
         nb = x_batch.shape[0]
-        grads = grad_fn(params, x_batch, y_batch)
-        layer_norms = torch.zeros(nb, n_layers, device=device, dtype=torch.float32)
-        for j, name in enumerate(param_names):
-            layer_norms[:, j] = grads[name].flatten(1).norm(dim=1).float() \
-                .clamp_min(1e-12).log()
-        out[start:start + nb] = layer_norms.cpu().numpy()
+        accum = torch.zeros(nb, n_layers, device=device, dtype=torch.float32)
+        augs = (x_batch, torch.flip(x_batch, dims=[-1])) if with_hflip \
+               else (x_batch,)
+        for aug in augs:
+            grads = grad_fn(params, aug, y_batch)
+            for j, name in enumerate(param_names):
+                accum[:, j] += grads[name].flatten(1).norm(dim=1).float() \
+                    .clamp_min(1e-12).log()
+        accum /= len(augs)
+        out[start:start + nb] = accum.cpu().numpy()
     return out
 
 
@@ -106,6 +112,9 @@ def main():
                    help="vmap batch size. P100 16GB tops out near 128 "
                         "(vmap+grad memory ≈ 2 × B × 11M params × 4B). "
                         "Drop to 96 or 64 if OOM; raise on H200/A100 80GB.")
+    p.add_argument("--with-hflip", action="store_true",
+                   help="Average grad-log-norms over identity + hflip augs. "
+                        "2x cost; possibly tighter LiRA Gaussians.")
     a = p.parse_args()
     shard_k, shard_n = a.shard
     if not (0 <= shard_k < shard_n):
@@ -115,7 +124,8 @@ def main():
           flush=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device: {device}", flush=True)
-    print(f"shard: {shard_k} of {shard_n}  batch: {a.batch}", flush=True)
+    print(f"shard: {shard_k} of {shard_n}  batch: {a.batch}  "
+          f"hflip: {a.with_hflip}", flush=True)
 
     combined = load_combined()
     n_pub, n_priv, n_total = combined.n_pub, combined.n_priv, len(combined)
@@ -133,7 +143,7 @@ def main():
     if shard_k == 0:
         print(f"Forward+backward: target on combined pool", flush=True)
         g_target = collect_grad_log_norms(target, imgs, labels, param_names,
-                                          device, a.batch)
+                                          device, a.batch, a.with_hflip)
         torch.save(
             {
                 "g_target": g_target,
@@ -175,7 +185,8 @@ def main():
                                           weights_only=True))
         shadow.eval()
         g_shard[j] = collect_grad_log_norms(shadow, imgs, labels,
-                                            param_names, device, a.batch)
+                                            param_names, device,
+                                            a.batch, a.with_hflip)
         if (j + 1) % 8 == 0 or j == n_shard - 1:
             print(f"  scored shadow {j+1}/{n_shard} (seed {shard_seeds[-1]})",
                   flush=True)
