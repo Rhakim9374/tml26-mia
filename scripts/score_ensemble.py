@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.eval import tpr_at_fpr
 
-LOGIT_PATH = ROOT / "checkpoints" / "logit_lira_loglr.npy"
+LOGIT_PATH = ROOT / "checkpoints" / "logit_features" / "log_lr.npy"
 GRAD_PATH = ROOT / "checkpoints" / "grad_features_lean" / "combined.pt"
 OUT_PATH = ROOT / "submissions" / "submission_ensemble.csv"
 SIGMA_FLOOR = 1e-6

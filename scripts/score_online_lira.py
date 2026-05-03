@@ -37,6 +37,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,8 +54,18 @@ SIGMOID_CLIP = 50.0  # avoid np.exp overflow on extreme log-LRs
 
 
 def make_augs(imgs: torch.Tensor) -> list[torch.Tensor]:
-    """Identity + horizontal flip. Cheap; captures most of Carlini's aug-query gain."""
-    return [imgs, torch.flip(imgs, dims=[-1])]
+    """6 deterministic augmentations: identity, hflip, and 4 reflect-padded
+    corner crops. Carlini's LiRA paper Sec. 4.4 shows multi-aug querying
+    tightens per-sample IN/OUT Gaussians and gives a measurable TPR lift —
+    the variance reduction from averaging φ across diverse views matters in
+    well-generalizing regimes where any single query is noisy.
+    """
+    H, W = imgs.shape[-2:]
+    pad = 4
+    padded = F.pad(imgs, (pad, pad, pad, pad), mode="reflect")
+    crops = [padded[..., dy:dy + H, dx:dx + W]
+             for dy, dx in [(0, 0), (2 * pad, 0), (0, 2 * pad), (2 * pad, 2 * pad)]]
+    return [imgs, torch.flip(imgs, dims=[-1]), *crops]
 
 
 @torch.no_grad()
@@ -147,13 +158,18 @@ def main():
     log_lr = (gauss_log_pdf(phi_target, mu_in, sigma_in) -
               gauss_log_pdf(phi_target, mu_out, sigma_out))
 
-    # Save log-LR (28k floats over the combined pool, indices [0,n_pub)=pub,
-    # [n_pub, end)=priv) so an ensemble script can mix this with grad-LiRA's
-    # log-LR without re-running the 30-min shadow sweep.
-    LOG_LR_PATH = ROOT / "checkpoints" / "logit_lira_loglr.npy"
-    LOG_LR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    np.save(LOG_LR_PATH, log_lr)
-    print(f"Saved log-LR → {LOG_LR_PATH}", flush=True)
+    # Save the full per-sample feature set so downstream variant scripts
+    # (RMIA, Z-score, ensemble) can run without re-doing the ~90-min sweep.
+    # Indices in every saved array: [0, n_pub) = pub; [n_pub, end) = priv.
+    FEATURES_DIR = ROOT / "checkpoints" / "logit_features"
+    FEATURES_DIR.mkdir(parents=True, exist_ok=True)
+    np.save(FEATURES_DIR / "log_lr.npy", log_lr)
+    np.save(FEATURES_DIR / "phi_target.npy", phi_target)
+    np.save(FEATURES_DIR / "mu_in.npy", mu_in)
+    np.save(FEATURES_DIR / "mu_out.npy", mu_out)
+    np.save(FEATURES_DIR / "sigma_in.npy", np.array(sigma_in))
+    np.save(FEATURES_DIR / "sigma_out.npy", np.array(sigma_out))
+    print(f"Saved logit features → {FEATURES_DIR}", flush=True)
 
     # Pub portion: TPR sanity check using known membership labels.
     pub_membership = np.asarray(load_pub().membership, dtype=int)
