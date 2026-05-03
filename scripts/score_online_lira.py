@@ -31,6 +31,7 @@ Run with:
 
 from __future__ import annotations
 
+import argparse
 import csv
 import sys
 from pathlib import Path
@@ -51,6 +52,7 @@ CHECKPOINTS_DIR = ROOT / "checkpoints"
 OUT_PATH = ROOT / "submissions" / "submission.csv"
 SIGMA_FLOOR = 1e-6
 SIGMOID_CLIP = 50.0  # avoid np.exp overflow on extreme log-LRs
+DEFAULT_CKPT_PREFIX = "shadow"
 
 
 def make_augs(imgs: torch.Tensor) -> list[torch.Tensor]:
@@ -98,8 +100,17 @@ def gauss_log_pdf(x, mu, sigma):
 
 
 def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--ckpt_prefix", default=DEFAULT_CKPT_PREFIX,
+                   help="Glob CHECKPOINTS_DIR/<prefix>_*.pt for shadow weights "
+                        "(and <prefix>_NNNN_in_idx.pt for IN-masks). Use a "
+                        "non-default prefix to score against a different shadow "
+                        "family without mixing it with the baseline shadow_*.pt.")
+    a = p.parse_args()
+    prefix = a.ckpt_prefix
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"device: {device}", flush=True)
+    print(f"device: {device}  ckpt_prefix={prefix}", flush=True)
 
     combined = load_combined()
     n_pub, n_priv, n_total = combined.n_pub, combined.n_priv, len(combined)
@@ -115,12 +126,12 @@ def main():
     if device == "cuda":
         torch.cuda.empty_cache()
 
-    ckpts = sorted(c for c in CHECKPOINTS_DIR.glob("shadow_*.pt")
+    ckpts = sorted(c for c in CHECKPOINTS_DIR.glob(f"{prefix}_*.pt")
                    if "_in_idx" not in c.name)
     if not ckpts:
-        sys.exit(f"No shadow checkpoints (shadow_*.pt) in {CHECKPOINTS_DIR}")
+        sys.exit(f"No shadow checkpoints ({prefix}_*.pt) in {CHECKPOINTS_DIR}")
     n_shadows = len(ckpts)
-    print(f"Found {n_shadows} shadow checkpoints", flush=True)
+    print(f"Found {n_shadows} shadow checkpoints (prefix={prefix})", flush=True)
 
     phi_shadow = np.zeros((n_shadows, n_total), dtype=np.float64)
     in_masks = np.zeros((n_shadows, n_total), dtype=bool)
@@ -128,7 +139,7 @@ def main():
     shadow = build_model().to(device)
     for k, ckpt in enumerate(ckpts):
         seed_str = ckpt.stem.split("_")[-1]
-        idx_path = CHECKPOINTS_DIR / f"shadow_{seed_str}_in_idx.pt"
+        idx_path = CHECKPOINTS_DIR / f"{prefix}_{seed_str}_in_idx.pt"
         in_idx = torch.load(idx_path, weights_only=True).numpy()
         in_masks[k, in_idx] = True
 

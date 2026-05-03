@@ -82,8 +82,16 @@ def split_in_out(n: int, seed: int, frac_in: float = 0.5) -> tuple[np.ndarray, n
 
 def train_shadow(seed: int, epochs: int = 100, batch_size: int = 256,
                  num_workers: int = 2, device: str | None = None,
-                 verbose: bool = True) -> Path:
-    """Train one shadow on a 50% subset of the combined pub+priv pool."""
+                 verbose: bool = True, label_smoothing: float = 0.0,
+                 weight_decay: float = 5e-4,
+                 ckpt_prefix: str = "shadow") -> Path:
+    """Train one shadow on a 50% subset of the combined pub+priv pool.
+
+    ckpt_prefix lets you train recipe variants (e.g., "shadow_ls01") without
+    overwriting baseline shadow_NNNN.pt. label_smoothing and weight_decay
+    are the levers we use to match target's overfit level — the baseline
+    recipe (LS=0, WD=5e-4, 100 epochs) overfits ~3-5x more than target.
+    """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -98,10 +106,10 @@ def train_shadow(seed: int, epochs: int = 100, batch_size: int = 256,
     np.random.seed(seed)
 
     model = build_model().to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.1,
-                                momentum=0.9, weight_decay=5e-4, nesterov=True)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9,
+                                weight_decay=weight_decay, nesterov=True)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
     model.train()
     for epoch in range(epochs):
@@ -124,8 +132,8 @@ def train_shadow(seed: int, epochs: int = 100, batch_size: int = 256,
                   flush=True)
 
     CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
-    ckpt_path = CHECKPOINTS_DIR / f"shadow_{seed:04d}.pt"
-    idx_path = CHECKPOINTS_DIR / f"shadow_{seed:04d}_in_idx.pt"
+    ckpt_path = CHECKPOINTS_DIR / f"{ckpt_prefix}_{seed:04d}.pt"
+    idx_path = CHECKPOINTS_DIR / f"{ckpt_prefix}_{seed:04d}_in_idx.pt"
     torch.save(model.state_dict(), ckpt_path)
     torch.save(torch.from_numpy(in_idx.astype(np.int64)), idx_path)
     if verbose:
