@@ -164,6 +164,8 @@ def main():
     pub_membership = np.asarray(load_pub().membership, dtype=int)
 
     FEATURES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # pickle_protocol=4: g_shadow is (512, 28000, 62) ≈ 3.5GB which serializes
+    # to a single string > 4GB under default protocol. Protocol 4 supports it.
     torch.save(
         {
             "g_target": g_target,                # (n_total, L)
@@ -177,6 +179,7 @@ def main():
             "pub_membership": pub_membership,
         },
         FEATURES_PATH,
+        pickle_protocol=4,
     )
     print(f"Saved raw features → {FEATURES_PATH}", flush=True)
 

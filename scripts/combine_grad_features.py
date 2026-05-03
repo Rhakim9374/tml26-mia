@@ -108,6 +108,8 @@ def main():
         print(f"    {param_names[j]:50s}  TPR={per_layer_tpr[j]:.4f}", flush=True)
 
     # Save the merged feature tensor for future iteration on combination logic.
+    # pickle_protocol=4: g_shadow is (512, 28000, 62) ≈ 3.5GB which serializes
+    # to a single string > 4GB under default protocol. Protocol 4 supports it.
     torch.save(
         {
             "g_target": g_target,
@@ -120,6 +122,7 @@ def main():
             "pub_membership": pub_membership,
         },
         COMBINED_PATH,
+        pickle_protocol=4,
     )
     print(f"\nSaved merged features → {COMBINED_PATH}", flush=True)
 
