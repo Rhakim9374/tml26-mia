@@ -3,15 +3,15 @@
 Same per-layer log-grad-norm features as score_grad_lira.py, but tuned for
 P100 throughput and structured for multi-job parallelism:
 
-  * GRAD_BATCH = 192   — fits ~14GB of the P100's 16GB at vmap+grad. Triples
-                         the per-step batch over the original (B=64),
-                         amortizing Python/launch overhead.
-  * Identity-only augs — drops the horizontal-flip query. Halves work; the
-                         original (id+flip) projected ≥24h on P100 here.
-  * --shard K N        — process shadows[K::N] only. Each shard writes its
-                         own slice; combine_grad_features.py merges them
-                         and computes scores. With N=4 on 4 P100s the wall
-                         clock drops to ~1.5h.
+  * --batch B (default 128) — vmap step size. Memory ≈ 2 × B × 11M params × 4B
+                              (≈11GB at B=128 on P100). B=192 OOMs on P100;
+                              raise to 256+ on H200/A100 80GB.
+  * Identity-only augs      — drops the horizontal-flip query. Halves work;
+                              the original (id+flip) projected ≥24h on P100.
+  * --shard K N             — process shadows[K::N] only. Each shard writes
+                              its own slice; combine_grad_features.py merges
+                              them and computes scores. With N=4 on 4 P100s
+                              the wall clock drops to ~1.5h.
 
 Coexists with score_grad_lira.py — different output paths, no clobbering.
 
@@ -58,7 +58,6 @@ from src.model import build_model, load_target
 
 CHECKPOINTS_DIR = ROOT / "checkpoints"
 FEATURES_DIR = CHECKPOINTS_DIR / "grad_features_lean"
-GRAD_BATCH = 192
 
 
 def preload(pool, device: str) -> tuple[torch.Tensor, torch.Tensor]:
@@ -69,7 +68,8 @@ def preload(pool, device: str) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def collect_grad_log_norms(model, imgs: torch.Tensor, labels: torch.Tensor,
-                           param_names: list[str], device: str) -> np.ndarray:
+                           param_names: list[str], device: str,
+                           batch_size: int) -> np.ndarray:
     """(N, L) per-sample per-named-parameter log L2 grad norm. Identity aug only."""
     n = imgs.shape[0]
     n_layers = len(param_names)
@@ -84,9 +84,9 @@ def collect_grad_log_norms(model, imgs: torch.Tensor, labels: torch.Tensor,
 
     grad_fn = vmap(grad(loss_fn, argnums=0), in_dims=(None, 0, 0))
 
-    for start in range(0, n, GRAD_BATCH):
-        x_batch = imgs[start:start + GRAD_BATCH]
-        y_batch = labels[start:start + GRAD_BATCH]
+    for start in range(0, n, batch_size):
+        x_batch = imgs[start:start + batch_size]
+        y_batch = labels[start:start + batch_size]
         nb = x_batch.shape[0]
         grads = grad_fn(params, x_batch, y_batch)
         layer_norms = torch.zeros(nb, n_layers, device=device, dtype=torch.float32)
@@ -102,6 +102,10 @@ def main():
     p.add_argument("--shard", nargs=2, type=int, default=[0, 1],
                    metavar=("K", "N"),
                    help="Process shadows[K::N]. Default 0 1 = all shadows.")
+    p.add_argument("--batch", type=int, default=128,
+                   help="vmap batch size. P100 16GB tops out near 128 "
+                        "(vmap+grad memory ≈ 2 × B × 11M params × 4B). "
+                        "Drop to 96 or 64 if OOM; raise on H200/A100 80GB.")
     a = p.parse_args()
     shard_k, shard_n = a.shard
     if not (0 <= shard_k < shard_n):
@@ -111,7 +115,7 @@ def main():
           flush=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device: {device}", flush=True)
-    print(f"shard: {shard_k} of {shard_n}", flush=True)
+    print(f"shard: {shard_k} of {shard_n}  batch: {a.batch}", flush=True)
 
     combined = load_combined()
     n_pub, n_priv, n_total = combined.n_pub, combined.n_priv, len(combined)
@@ -128,7 +132,8 @@ def main():
 
     if shard_k == 0:
         print(f"Forward+backward: target on combined pool", flush=True)
-        g_target = collect_grad_log_norms(target, imgs, labels, param_names, device)
+        g_target = collect_grad_log_norms(target, imgs, labels, param_names,
+                                          device, a.batch)
         torch.save(
             {
                 "g_target": g_target,
@@ -170,7 +175,7 @@ def main():
                                           weights_only=True))
         shadow.eval()
         g_shard[j] = collect_grad_log_norms(shadow, imgs, labels,
-                                            param_names, device)
+                                            param_names, device, a.batch)
         if (j + 1) % 8 == 0 or j == n_shard - 1:
             print(f"  scored shadow {j+1}/{n_shard} (seed {shard_seeds[-1]})",
                   flush=True)
