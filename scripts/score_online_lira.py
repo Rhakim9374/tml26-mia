@@ -147,6 +147,14 @@ def main():
     log_lr = (gauss_log_pdf(phi_target, mu_in, sigma_in) -
               gauss_log_pdf(phi_target, mu_out, sigma_out))
 
+    # Save log-LR (28k floats over the combined pool, indices [0,n_pub)=pub,
+    # [n_pub, end)=priv) so an ensemble script can mix this with grad-LiRA's
+    # log-LR without re-running the 30-min shadow sweep.
+    LOG_LR_PATH = ROOT / "checkpoints" / "logit_lira_loglr.npy"
+    LOG_LR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    np.save(LOG_LR_PATH, log_lr)
+    print(f"Saved log-LR → {LOG_LR_PATH}", flush=True)
+
     # Pub portion: TPR sanity check using known membership labels.
     pub_membership = np.asarray(load_pub().membership, dtype=int)
     pub_tpr = tpr_at_fpr(log_lr[:n_pub], pub_membership)
