@@ -88,8 +88,23 @@ def main():
     p.add_argument("--seed", type=int, required=True)
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--batch_size", type=int, default=256)
-    p.add_argument("--label_smoothing", type=float, default=0.0)
+    p.add_argument("--optimizer", default="sgd",
+                   choices=["sgd", "adam", "adamw"],
+                   help="Default lr for sgd is 0.1; for adam/adamw is 1e-3 — "
+                        "if you switch to adam without changing --lr you'll "
+                        "be on the wrong scale, so set --lr explicitly.")
+    p.add_argument("--lr", type=float, default=0.1)
+    p.add_argument("--momentum", type=float, default=0.9)
+    p.add_argument("--no_nesterov", action="store_true",
+                   help="Disable Nesterov momentum (default: enabled). SGD only.")
     p.add_argument("--weight_decay", type=float, default=5e-4)
+    p.add_argument("--label_smoothing", type=float, default=0.0)
+    p.add_argument("--mixup_alpha", type=float, default=0.0,
+                   help="Mixup Beta(α,α) parameter; 0 disables. Common: 0.2 or 0.5.")
+    p.add_argument("--aug_strong", action="store_true",
+                   help="Use ColorJitter + RandomErasing in addition to crop+flip.")
+    p.add_argument("--scheduler", default="cosine",
+                   choices=["cosine", "step", "linear", "constant"])
     p.add_argument("--ckpt_prefix", default="sweep",
                    help="Filename prefix so this run doesn't clobber baseline shadows.")
     a = p.parse_args()
@@ -97,8 +112,11 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"=== Recipe sweep ===", flush=True)
     print(f"  seed={a.seed}  epochs={a.epochs}  batch={a.batch_size}", flush=True)
-    print(f"  label_smoothing={a.label_smoothing}  weight_decay={a.weight_decay}",
-          flush=True)
+    print(f"  optimizer={a.optimizer}  lr={a.lr}  momentum={a.momentum}  "
+          f"nesterov={not a.no_nesterov}", flush=True)
+    print(f"  weight_decay={a.weight_decay}  scheduler={a.scheduler}", flush=True)
+    print(f"  label_smoothing={a.label_smoothing}  mixup_alpha={a.mixup_alpha}  "
+          f"aug_strong={a.aug_strong}", flush=True)
     print(f"  ckpt_prefix={a.ckpt_prefix}", flush=True)
 
     t0 = time.time()
@@ -106,8 +124,15 @@ def main():
         seed=a.seed,
         epochs=a.epochs,
         batch_size=a.batch_size,
-        label_smoothing=a.label_smoothing,
+        optimizer_type=a.optimizer,
+        lr=a.lr,
+        momentum=a.momentum,
+        nesterov=not a.no_nesterov,
         weight_decay=a.weight_decay,
+        label_smoothing=a.label_smoothing,
+        mixup_alpha=a.mixup_alpha,
+        aug_strong=a.aug_strong,
+        scheduler_type=a.scheduler,
         ckpt_prefix=a.ckpt_prefix,
         device=device,
     )
@@ -133,6 +158,10 @@ def main():
     phi_in = phi_shadow[in_mask]
     phi_out = phi_shadow[~in_mask]
 
+    # Persist φ so the post-hoc comparison script can rank recipes once
+    # phi_target.npy is available (e.g. after the multi-aug LiRA rerun).
+    np.save(CHECKPOINTS_DIR / f"{a.ckpt_prefix}_{a.seed:04d}_phi.npy", phi_shadow)
+
     print(f"\n=== shadow φ distribution percentiles ===")
     print(f"  IN  (this shadow trained on these): {pct_str(phi_in)}")
     print(f"  OUT (this shadow did not see):      {pct_str(phi_out)}")
@@ -142,13 +171,23 @@ def main():
         print(f"\n=== target φ for reference ===")
         print(f"  target φ (combined pool):           {pct_str(phi_target)}")
 
-        # Match metric: |median(shadow IN) − median(target overall)|
-        # Smaller is better — closer scale match.
-        match_in = abs(np.median(phi_in) - np.median(phi_target))
-        match_out = abs(np.median(phi_out) - np.median(phi_target))
+        # Match metric: mean |shadow percentile − target percentile| over the
+        # 7 percentiles {1,5,25,50,75,95,99}. Captures ALL parts of the
+        # distribution, not just the median. Lower = closer to target.
+        qs = (1, 5, 25, 50, 75, 95, 99)
+        sp_in = np.percentile(phi_in, qs)
+        sp_out = np.percentile(phi_out, qs)
+        tp = np.percentile(phi_target, qs)
+        match_in = float(np.abs(sp_in - tp).mean())
+        match_out = float(np.abs(sp_out - tp).mean())
+        # Also report L2 norm of percentile differences for sensitivity to outliers.
+        match_in_l2 = float(np.sqrt(((sp_in - tp) ** 2).mean()))
+        match_out_l2 = float(np.sqrt(((sp_out - tp) ** 2).mean()))
         print(f"\n=== match score (lower = closer to target distribution) ===")
-        print(f"  |median(shadow IN)  − median(target)|  = {match_in:.3f}")
-        print(f"  |median(shadow OUT) − median(target)|  = {match_out:.3f}")
+        print(f"  L1 percentile dist (IN  vs target) = {match_in:.3f}")
+        print(f"  L1 percentile dist (OUT vs target) = {match_out:.3f}")
+        print(f"  L2 percentile dist (IN  vs target) = {match_in_l2:.3f}")
+        print(f"  L2 percentile dist (OUT vs target) = {match_out_l2:.3f}")
     else:
         print(f"\n(phi_target.npy not found at {PHI_TARGET_PATH} — skip comparison)")
 

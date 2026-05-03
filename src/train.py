@@ -35,13 +35,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CHECKPOINTS_DIR = REPO_ROOT / "checkpoints"
 
 
-def train_transform() -> T.Compose:
-    return T.Compose([
-        T.Resize(32),
-        T.RandomCrop(32, padding=4),
-        T.RandomHorizontalFlip(),
-        T.Normalize(mean=MEAN, std=STD),
-    ])
+def train_transform(strong: bool = False) -> T.Compose:
+    """Standard CIFAR-style augs. With `strong=True`, adds ColorJitter and
+    RandomErasing to the pipeline — heavier regularization that prevents
+    100%-confident memorization on hard samples."""
+    pre_norm = [T.Resize(32), T.RandomCrop(32, padding=4), T.RandomHorizontalFlip()]
+    if strong:
+        pre_norm.append(T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2))
+    post_norm = [T.Normalize(mean=MEAN, std=STD)]
+    if strong:
+        post_norm.append(T.RandomErasing(p=0.25))
+    return T.Compose(pre_norm + post_norm)
 
 
 def eval_transform() -> T.Compose:
@@ -80,24 +84,87 @@ def split_in_out(n: int, seed: int, frac_in: float = 0.5) -> tuple[np.ndarray, n
     return perm[:cut], perm[cut:]
 
 
-def train_shadow(seed: int, epochs: int = 100, batch_size: int = 256,
-                 num_workers: int = 2, device: str | None = None,
-                 verbose: bool = True, label_smoothing: float = 0.0,
-                 weight_decay: float = 5e-4,
-                 ckpt_prefix: str = "shadow") -> Path:
+def _maybe_mixup(x: torch.Tensor, y: torch.Tensor, alpha: float):
+    """Standard mixup (Zhang et al. 2017). alpha=0 disables → returns inputs
+    unchanged with a sentinel `lam=None`."""
+    if alpha <= 0:
+        return x, y, y, None
+    lam = float(np.random.beta(alpha, alpha))
+    idx = torch.randperm(x.size(0), device=x.device)
+    return lam * x + (1 - lam) * x[idx], y, y[idx], lam
+
+
+def _make_scheduler(optimizer, scheduler_type: str, epochs: int):
+    if scheduler_type == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    if scheduler_type == "step":
+        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=max(1, epochs // 3),
+                                               gamma=0.1)
+    if scheduler_type == "linear":
+        return torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0,
+                                                 end_factor=0.0, total_iters=epochs)
+    if scheduler_type == "constant":
+        return torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0,
+                                                   total_iters=epochs)
+    raise ValueError(f"Unknown scheduler_type: {scheduler_type}")
+
+
+def _make_optimizer(model, optimizer_type: str, lr: float, momentum: float,
+                    nesterov: bool, weight_decay: float):
+    if optimizer_type == "sgd":
+        return torch.optim.SGD(model.parameters(), lr=lr, momentum=momentum,
+                               weight_decay=weight_decay, nesterov=nesterov)
+    if optimizer_type == "adam":
+        return torch.optim.Adam(model.parameters(), lr=lr,
+                                weight_decay=weight_decay)
+    if optimizer_type == "adamw":
+        # AdamW decouples weight decay from gradient update — different from
+        # Adam's L2 regularization in the gradient.
+        return torch.optim.AdamW(model.parameters(), lr=lr,
+                                 weight_decay=weight_decay)
+    raise ValueError(f"Unknown optimizer_type: {optimizer_type}")
+
+
+def train_shadow(
+    seed: int,
+    epochs: int = 100,
+    batch_size: int = 256,
+    optimizer_type: str = "sgd",
+    lr: float = 0.1,
+    momentum: float = 0.9,
+    nesterov: bool = True,
+    weight_decay: float = 5e-4,
+    label_smoothing: float = 0.0,
+    mixup_alpha: float = 0.0,
+    aug_strong: bool = False,
+    scheduler_type: str = "cosine",
+    num_workers: int = 2,
+    device: str | None = None,
+    verbose: bool = True,
+    ckpt_prefix: str = "shadow",
+) -> Path:
     """Train one shadow on a 50% subset of the combined pub+priv pool.
 
-    ckpt_prefix lets you train recipe variants (e.g., "shadow_ls01") without
-    overwriting baseline shadow_NNNN.pt. label_smoothing and weight_decay
-    are the levers we use to match target's overfit level — the baseline
-    recipe (LS=0, WD=5e-4, 100 epochs) overfits ~3-5x more than target.
+    Knobs (all the levers we use to match target's φ distribution):
+      label_smoothing : caps maximum confidence (LS=0.05 already matches target
+                        in p25–p99; lower tail still needs more help).
+      mixup_alpha     : Zhang-style mixup. Likely cause of target's wide lower
+                        tail — mixup creates "hard" mixed samples the model
+                        can't classify confidently.
+      aug_strong      : ColorJitter + RandomErasing on top of crop+flip.
+                        Heavier regularization, similar effect to mixup.
+      epochs / lr / scheduler_type / weight_decay / momentum / nesterov :
+                        standard optimizer knobs.
+
+    ckpt_prefix lets you train recipe variants (e.g., "lsv1") without
+    overwriting baseline shadow_NNNN.pt.
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     pool = load_combined(transform=None)
     in_idx, _ = split_in_out(len(pool), seed=seed, frac_in=0.5)
-    train_ds = IndexedSubset(pool, in_idx, train_transform())
+    train_ds = IndexedSubset(pool, in_idx, train_transform(strong=aug_strong))
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers, pin_memory=(device == "cuda"),
                               drop_last=False)
@@ -106,9 +173,9 @@ def train_shadow(seed: int, epochs: int = 100, batch_size: int = 256,
     np.random.seed(seed)
 
     model = build_model().to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9,
-                                weight_decay=weight_decay, nesterov=True)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    optimizer = _make_optimizer(model, optimizer_type, lr, momentum, nesterov,
+                                weight_decay)
+    scheduler = _make_scheduler(optimizer, scheduler_type, epochs)
     criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
     model.train()
@@ -118,12 +185,18 @@ def train_shadow(seed: int, epochs: int = 100, batch_size: int = 256,
             imgs = imgs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(imgs)
-            loss = criterion(logits, labels)
+            mixed_x, y_a, y_b, lam = _maybe_mixup(imgs, labels, mixup_alpha)
+            logits = model(mixed_x)
+            if lam is None:
+                loss = criterion(logits, y_a)
+            else:
+                loss = lam * criterion(logits, y_a) + (1 - lam) * criterion(logits, y_b)
             loss.backward()
             optimizer.step()
             running += loss.item() * imgs.size(0)
-            correct += (logits.argmax(1) == labels).sum().item()
+            # Accuracy reported against the "majority" label only (y_a) when
+            # mixup is on — informative enough to monitor convergence.
+            correct += (logits.argmax(1) == y_a).sum().item()
             total += imgs.size(0)
         scheduler.step()
         if verbose and (epoch % 10 == 0 or epoch == epochs - 1):
