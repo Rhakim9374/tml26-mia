@@ -1,38 +1,40 @@
-"""Online LiRA scoring with augmentation queries.
+"""Online-LiRA feature extraction for a shadow family.
 
-For each (sample, model), φ = log(p / (1-p)) on the correct class, averaged
+For each (sample, model), φ = log(p / (1−p)) on the correct class, averaged
 over augmentations: identity + horizontal flip. Computed directly from logits
 as φ_y = z_y − logsumexp(z_{j≠y}) — no clamping or EPS, no overflow when
 softmax saturates at 1.0.
 
-Shadows trained on the COMBINED pub+priv pool (see src/train.py), so every
-sample (pub OR priv) is IN for ~half the shadows and OUT for the other half.
-That gives us per-sample IN-Gaussians and OUT-Gaussians on priv at scoring
-time — the prerequisite for online LiRA to actually work at submission. Pub
-samples get the same per-sample treatment, so the pub TPR is a faithful
-estimate of priv TPR (no class-conditional fallback hacks).
-
-Per-layer-of-φ this is just one scalar per sample, so the tensor is small:
-  φ matrix: (n_shadows, n_combined) = (512, 28000) ≈ 115 MB at float64.
+Shadows must have been trained on the COMBINED pub+priv pool (see
+src/train.py). Every sample (pub OR priv) is then IN for ~half the shadows
+and OUT for the other half, which lets us fit per-sample IN/OUT Gaussians
+on every priv sample — the prerequisite for online LiRA to actually
+generalize from the pub sanity check to the priv leaderboard.
 
 Scoring (Carlini fixed-σ LiRA, eq. 4):
   μ_IN(x), μ_OUT(x) per-sample from the per-shadow IN/OUT mask.
-  σ_IN, σ_OUT global scalars (single σ per IN/OUT pool).
+  σ_IN, σ_OUT global scalars (one σ per IN/OUT pool, pooled across all samples).
   log-LR(x) = log N(φ_target(x) | μ_IN(x), σ_IN) − log N(φ_target(x) | μ_OUT(x), σ_OUT).
 
-Pub TPR at 5% FPR is reported as a sanity check; the submission CSV uses the
-log-LR sigmoid-mapped to [0, 1] over the priv portion of the combined pool.
+Outputs go to checkpoints/logit_features_<ckpt_prefix>/ so different shadow
+families' features sit in distinct dirs and can be combined by the ensemble
+script without manual renames.
 
-Run with:
-    condor_submit mia.sub -append "script=scripts/score_online_lira.py" \\
-                          -append "tag=score_online" -queue 1
-    python -m src.submit --tag online_lira_combined_n512_aug2
+Run on the cluster:
+    condor_submit mia.sub \\
+        -append "script=scripts/score_online_lira.py" \\
+        -append "args=--ckpt_prefix shadow" \\
+        -append "tag=score_baseline" -queue 1
+
+    condor_submit mia.sub \\
+        -append "script=scripts/score_online_lira.py" \\
+        -append "args=--ckpt_prefix lsv1" \\
+        -append "tag=score_lsv1" -queue 1
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
 from pathlib import Path
 
@@ -48,26 +50,22 @@ from src.eval import tpr_at_fpr
 from src.model import build_model, load_target
 
 CHECKPOINTS_DIR = ROOT / "checkpoints"
-OUT_PATH = ROOT / "submissions" / "submission.csv"
 SIGMA_FLOOR = 1e-6
-SIGMOID_CLIP = 50.0  # avoid np.exp overflow on extreme log-LRs
-DEFAULT_CKPT_PREFIX = "shadow"
 
 
 def make_augs(imgs: torch.Tensor) -> list[torch.Tensor]:
-    """Identity + hflip. Empirically tested 6-aug variant (id+hflip+4 corner
-    crops) on baseline shadows — pub TPR REGRESSED from 0.0697 to 0.0624.
-    The corner crops apparently disturb predictions in a way that hurts
-    member/non-member ranking on 32x32 inputs, despite Carlini's paper
-    suggesting otherwise. Sticking with the 2-aug version that works."""
+    """Identity + horizontal flip — two augmentation queries per (sample, model).
+    Multi-aug averaging tightens the per-sample Gaussians without hurting rank
+    correlation here (we tested heavier aug schedules empirically; they
+    regressed pub TPR on this 32×32 input regime)."""
     return [imgs, torch.flip(imgs, dims=[-1])]
 
 
 @torch.no_grad()
 def collect_phi(model, loader, n: int, device: str) -> np.ndarray:
     """Mean φ across augmentations, in dataset order. Computed from logits as
-    z_y − logsumexp(z_{j≠y}) — equivalent to log(p/(1−p)) on the true class but
-    numerically stable when softmax saturates."""
+    z_y − logsumexp(z_{j≠y}) — equivalent to log(p/(1−p)) on the true class
+    but numerically stable when softmax saturates."""
     phi = np.zeros(n, dtype=np.float64)
     pos = 0
     for _, imgs, labels in loader:
@@ -88,19 +86,19 @@ def collect_phi(model, loader, n: int, device: str) -> np.ndarray:
 
 
 def gauss_log_pdf(x, mu, sigma):
-    """log N(x; μ, σ), elementwise. σ may be a scalar or array broadcastable to x."""
+    """log N(x; μ, σ) elementwise. σ may be a scalar or array broadcastable to x."""
     return -0.5 * np.log(2 * np.pi) - np.log(sigma) - 0.5 * ((x - mu) / sigma) ** 2
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--ckpt_prefix", default=DEFAULT_CKPT_PREFIX,
+    p.add_argument("--ckpt_prefix", default="shadow",
                    help="Glob CHECKPOINTS_DIR/<prefix>_*.pt for shadow weights "
-                        "(and <prefix>_NNNN_in_idx.pt for IN-masks). Use a "
-                        "non-default prefix to score against a different shadow "
-                        "family without mixing it with the baseline shadow_*.pt.")
+                        "(and <prefix>_NNNN_in_idx.pt for IN-masks). Features "
+                        "are written to checkpoints/logit_features_<prefix>/.")
     a = p.parse_args()
     prefix = a.ckpt_prefix
+    features_dir = CHECKPOINTS_DIR / f"logit_features_{prefix}"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device: {device}  ckpt_prefix={prefix}", flush=True)
@@ -162,39 +160,23 @@ def main():
     log_lr = (gauss_log_pdf(phi_target, mu_in, sigma_in) -
               gauss_log_pdf(phi_target, mu_out, sigma_out))
 
-    # Save the full per-sample feature set so downstream variant scripts
-    # (RMIA, Z-score, ensemble) can run without re-doing the ~90-min sweep.
-    # Indices in every saved array: [0, n_pub) = pub; [n_pub, end) = priv.
-    FEATURES_DIR = ROOT / "checkpoints" / "logit_features"
-    FEATURES_DIR.mkdir(parents=True, exist_ok=True)
-    np.save(FEATURES_DIR / "log_lr.npy", log_lr)
-    np.save(FEATURES_DIR / "phi_target.npy", phi_target)
-    np.save(FEATURES_DIR / "mu_in.npy", mu_in)
-    np.save(FEATURES_DIR / "mu_out.npy", mu_out)
-    np.save(FEATURES_DIR / "sigma_in.npy", np.array(sigma_in))
-    np.save(FEATURES_DIR / "sigma_out.npy", np.array(sigma_out))
-    print(f"Saved logit features → {FEATURES_DIR}", flush=True)
+    # Save the full per-sample feature set so the ensemble script can combine
+    # this family with another without re-running the shadow sweep. Indices in
+    # every saved array: [0, n_pub) = pub; [n_pub, end) = priv.
+    features_dir.mkdir(parents=True, exist_ok=True)
+    np.save(features_dir / "log_lr.npy", log_lr)
+    np.save(features_dir / "phi_target.npy", phi_target)
+    np.save(features_dir / "mu_in.npy", mu_in)
+    np.save(features_dir / "mu_out.npy", mu_out)
+    np.save(features_dir / "sigma_in.npy", np.array(sigma_in))
+    np.save(features_dir / "sigma_out.npy", np.array(sigma_out))
+    print(f"Saved logit features → {features_dir}", flush=True)
 
-    # Pub portion: TPR sanity check using known membership labels.
+    # Pub TPR sanity check (sub-population we know the labels for).
     pub_membership = np.asarray(load_pub().membership, dtype=int)
     pub_tpr = tpr_at_fpr(log_lr[:n_pub], pub_membership)
     print(f"\n=== TPR@5%FPR on pub (per-sample fixed-σ LiRA) ===", flush=True)
     print(f"  {pub_tpr:.4f}", flush=True)
-
-    # Priv portion: write submission.
-    score_priv = 1.0 / (1.0 + np.exp(-np.clip(log_lr[n_pub:],
-                                              -SIGMOID_CLIP, SIGMOID_CLIP)))
-    priv_ids = combined.ids[n_pub:]
-
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(OUT_PATH, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["id", "score"])
-        for i, s in zip(priv_ids, score_priv):
-            w.writerow([str(i), f"{s:.6f}"])
-    print(f"\nWrote {OUT_PATH}  rows={len(priv_ids)}  "
-          f"score range=[{score_priv.min():.4f}, {score_priv.max():.4f}]",
-          flush=True)
 
 
 if __name__ == "__main__":

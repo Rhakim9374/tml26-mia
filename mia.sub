@@ -1,21 +1,30 @@
 # HTCondor submit file for TML26 MIA jobs.
 #
-# Always pass -queue N at submit time (no queue statement in this file).
-# Examples:
-#   condor_submit mia.sub -append "script=scripts/baseline_loss.py" -append "tag=baseline" -queue 1
-#   condor_submit mia.sub -append "script=scripts/train_shadow.py" \
-#                         -append 'args=$(Process)' -append "tag=shadow" -queue 16
-#   condor_submit mia.sub -append "request_memory=16G" ... -queue 1
+# Single submit file used for all stages of the pipeline (shadow training,
+# feature extraction, ensembling). Override script/args/tag per submission;
+# always pass -queue N at submit time (no queue statement here).
 #
-# DO NOT change docker_image, executable, requirements, or +Want* lines —
-# those are prescribed by the HPC cluster guide.
+# Examples:
+#   condor_submit mia.sub \
+#       -append "script=scripts/train_shadow.py" \
+#       -append 'args=$(Process) --count 32 --ckpt_prefix shadow' \
+#       -append "tag=shadow_baseline" -queue 16
+#
+#   condor_submit mia.sub \
+#       -append "script=scripts/score_online_lira.py" \
+#       -append "args=--ckpt_prefix shadow" \
+#       -append "tag=score_baseline" -queue 1
+#
+#   condor_submit mia.sub \
+#       -append "script=scripts/score_logit_ensemble.py" \
+#       -append "tag=ensemble" -queue 1
 
 universe      = docker
 docker_image  = pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
 executable    = /opt/conda/bin/python
 
 # --- Override these per submission --------------------------------------------
-script = scripts/recon.py
+script = scripts/score_logit_ensemble.py
 args   =
 tag    = run
 
@@ -25,7 +34,7 @@ output = /home/$ENV(USER)/tml26-mia/runlogs/$(tag).$(ClusterId).$(ProcId).out
 error  = /home/$ENV(USER)/tml26-mia/runlogs/$(tag).$(ClusterId).$(ProcId).err
 log    = /home/$ENV(USER)/tml26-mia/runlogs/$(tag).$(ClusterId).log
 
-# --- Resources (tunable) ------------------------------------------------------
+# --- Resources ----------------------------------------------------------------
 request_GPUs   = 1
 request_CPUs   = 1
 request_memory = 20G
