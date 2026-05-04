@@ -81,17 +81,23 @@ def main():
     baseline_rank = to_rank(baseline_loglr)
     lsv1_rank = to_rank(lsv1_loglr)
 
+    # Coarse 0.05-step sweep across full range, then fine 0.02-step sweep
+    # around the previously-found optimum (α≈0.3 gave 0.0737 on pub).
+    coarse = np.round(np.arange(0.0, 1.01, 0.05), 3)
+    fine = np.round(np.arange(0.20, 0.46, 0.02), 3)
+    alphas = sorted(set(coarse.tolist()) | set(fine.tolist()))
+
     print(f"\n=== α·baseline + (1−α)·lsv1 (rank-averaged) — pub TPR ===",
           flush=True)
     best_alpha, best_tpr, best_score = 0.5, -1.0, None
-    for alpha in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+    for alpha in alphas:
         mix = alpha * baseline_rank + (1 - alpha) * lsv1_rank
         tpr = tpr_at_fpr(mix[:n_pub], pub_membership)
         marker = ""
         if tpr > best_tpr:
-            best_alpha, best_tpr, best_score = alpha, tpr, mix
+            best_alpha, best_tpr, best_score = float(alpha), tpr, mix
             marker = "  ← best so far"
-        print(f"  α={alpha:.1f}  pub TPR={tpr:.4f}{marker}", flush=True)
+        print(f"  α={alpha:.2f}  pub TPR={tpr:.4f}{marker}", flush=True)
 
     print(f"\nBest mix: α={best_alpha:.1f}  pub TPR={best_tpr:.4f}", flush=True)
 
