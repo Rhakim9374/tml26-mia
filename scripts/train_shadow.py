@@ -16,13 +16,13 @@ Two shadow families are needed for the final ensemble:
     # → 16 jobs × 32 shadows = 512 baseline shadows.
 
   recipe-matched (LS=0.06, 60 epochs):
-    for k in $(seq 0 15); do
+    for k in $(seq 0 31); do
       condor_submit mia.sub \\
         -append "script=scripts/train_shadow.py" \\
         -append "args=$k --count 32 --label_smoothing 0.06 --epochs 60 --ckpt_prefix lsv1" \\
         -append "tag=shadow_lsv1" -queue 1
     done
-    # → 16 jobs × 32 shadows = 512 recipe-matched shadows.
+    # → 32 jobs × 32 shadows = 1024 recipe-matched shadows.
 """
 
 from __future__ import annotations

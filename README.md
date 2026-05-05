@@ -67,7 +67,7 @@ condor_submit mia.sub \
   -append "script=scripts/score_logit_ensemble.py" \
   -append "tag=ensemble" -queue 1
 
-python -m src.submit --tag final
+python -m src.submit --tag ensemble_a0.30
 ```
 
 ## Repository layout
@@ -85,4 +85,3 @@ scripts/
   score_logit_ensemble.py  Combines two families' features → submission.csv
 mia.sub       HTCondor submit template (shared across all stages)
 ```
-
